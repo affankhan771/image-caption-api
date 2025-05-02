@@ -40,7 +40,7 @@ def generate_caption():
         prompt = (
             "Generate a short caption (max 20 words) describing this image, the caption will be used for social media posting, make it relative to that. "
             "Also provide 5 relevant hashtags. "
-            "Return in JSON format: {\"caption\": \"\", \"hashtags\": []}"
+            "Return ONLY valid JSON: {\"caption\": \"\", \"hashtags\": []}"
         )
 
         # Call Gemini API
@@ -90,4 +90,6 @@ def generate_caption():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Use PORT environment variable for Railway, default to 5000 for local
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
