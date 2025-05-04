@@ -11,85 +11,103 @@ import re
 
 app = Flask(__name__)
 
-# Set up logging
+# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.DEBUG)
 
-# Load environment variables
+# ─── Gemini setup ─────────────────────────────────────────────────────────────
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-
-# Initialize Gemini model
 model = genai.GenerativeModel("gemini-1.5-flash")
 
+# ──────────────────────────────────────────────────────────────────────────────
 @app.route("/generate-caption", methods=["POST"])
 def generate_caption():
+    """
+    Accepts a multipart/form‑data request:
+      • field "image"  – required – image file (png/jpg/…)
+      • field "prompt" – optional – extra text to guide the caption
+
+    Returns
+      { "caption": "…", "hashtags": ["#one", "#two", …] }
+    """
     try:
-        # Check if an image file is provided
+        # ---- 1. Validate + load the image ------------------------------------
         if "image" not in request.files:
             return jsonify({"error": "No image provided"}), 400
 
         image_file = request.files["image"]
         image = Image.open(image_file)
 
-        # Convert image to base64 for Gemini API
-        buffered = BytesIO()
-        image.save(buffered, format="PNG")
-        img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        # ---- 2. Read the (optional) prompt -----------------------------------
+        user_prompt = (request.form.get("prompt") or "").strip()
 
-        # Prepare prompt for caption and hashtags
-        prompt = (
-            "Generate a short caption (max 20 words) describing this image, the caption will be used for social media posting, make it relative to that. "
-            "Also provide 5 relevant hashtags. "
-            "Return ONLY valid JSON: {\"caption\": \"\", \"hashtags\": []}"
+        # ---- 3. Convert image ➜ base64 for Gemini ---------------------------
+        buf = BytesIO()
+        image.save(buf, format="PNG")
+        img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        # ---- 4. Build the prompt for Gemini ---------------------------------
+        base_prompt = (
+            "Generate a short caption (max 20 words) describing this image for a "
+            "social‑media post."
+        )
+        if user_prompt:
+            base_prompt += f' Take this user idea into account: "{user_prompt}".'
+
+        base_prompt += (
+            " Also provide 5 relevant hashtags.\n"
+            'Return ONLY valid JSON in the form: {"caption": "", "hashtags": []}'
         )
 
-        # Call Gemini API
+        # ---- 5. Call Gemini --------------------------------------------------
         response = model.generate_content(
             [
-                {"mime_type": "image/png", "data": img_base64},
-                {"text": prompt}
+                {"mime_type": "image/png", "data": img_b64},
+                {"text": base_prompt},
             ]
         )
 
-        # Log the raw response for debugging
-        logging.debug(f"Raw Gemini API response: {response.text}")
+        logging.debug("Raw Gemini response: %s", response.text)
 
-        # Parse response as JSON
-        response_text = response.text.strip()
-        # Strip markdown if present
-        if response_text.startswith("```json"):
-            response_text = response_text[7:].rstrip("```")
-        elif response_text.startswith("```"):
-            response_text = response_text[3:].rstrip("```")
+        # ---- 6. Strip any markdown fencing Gemini may return ----------------
+        text = response.text.strip()
+        if text.startswith("```json"):
+            text = text[7:].rstrip("```").strip()
+        elif text.startswith("```"):
+            text = text[3:].rstrip("```").strip()
 
+        # ---- 7. Parse JSON (with a fallback regex extraction) ---------------
         try:
-            result = json.loads(response_text)
-            if not isinstance(result, dict) or "caption" not in result or "hashtags" not in result:
-                return jsonify({"error": "Invalid response format from Gemini API"}), 500
-            # Add # to each hashtag
-            result["hashtags"] = [f"#{tag}" if not tag.startswith("#") else tag for tag in result["hashtags"]]
-        except json.JSONDecodeError as e:
-            # Try manual JSON extraction
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                try:
-                    result = json.loads(json_match.group())
-                    if not isinstance(result, dict) or "caption" not in result or "hashtags" not in result:
-                        return jsonify({"error": "Invalid response format from Gemini API"}), 500
-                    # Add # to each hashtag
-                    result["hashtags"] = [f"#{tag}" if not tag.startswith("#") else tag for tag in result["hashtags"]]
-                except json.JSONDecodeError as e:
-                    return jsonify({"error": f"Failed to parse Gemini API response: {str(e)}", "raw_response": response_text}), 500
-            else:
-                return jsonify({"error": f"Failed to parse Gemini API response: {str(e)}", "raw_response": response_text}), 500
+            result = json.loads(text)
+        except json.JSONDecodeError:
+            m = re.search(r"\{.*\}", text, re.DOTALL)
+            if not m:
+                return jsonify(
+                    {"error": "Failed to parse Gemini response", "raw_response": text}
+                ), 500
+            result = json.loads(m.group())
+
+        # ---- 8. Validate + normalise hashtags -------------------------------
+        if (
+            not isinstance(result, dict)
+            or "caption" not in result
+            or "hashtags" not in result
+            or not isinstance(result["hashtags"], (list, tuple))
+        ):
+            return jsonify({"error": "Invalid JSON from Gemini"}), 500
+
+        result["hashtags"] = [
+            tag if tag.startswith("#") else f"#{tag}" for tag in result["hashtags"]
+        ]
 
         return jsonify(result)
 
     except Exception as e:
-        logging.error(f"Error processing request: {str(e)}")
+        logging.exception("Error processing request")
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == "__main__":
-    # Use PORT environment variable for Railway, default to 5000 for local
+    # Railway sets $PORT; fall back to 5000 locally
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
