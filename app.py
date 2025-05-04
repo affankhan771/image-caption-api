@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS                    # ← NEW
 import google.generativeai as genai
 from dotenv import load_dotenv
 import os
@@ -10,6 +11,7 @@ import logging
 import re
 
 app = Flask(__name__)
+CORS(app, resources={r"/generate-caption": {"origins": "*"}})  # ← NEW (allows all)
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.DEBUG)
@@ -23,11 +25,11 @@ model = genai.GenerativeModel("gemini-1.5-flash")
 @app.route("/generate-caption", methods=["POST"])
 def generate_caption():
     """
-    Accepts a multipart/form‑data request:
+    Accepts a multipart/form-data request:
       • field "image"  – required – image file (png/jpg/…)
       • field "prompt" – optional – extra text to guide the caption
 
-    Returns
+    Returns:
       { "caption": "…", "hashtags": ["#one", "#two", …] }
     """
     try:
@@ -41,12 +43,12 @@ def generate_caption():
         # ---- 2. Read the (optional) prompt -----------------------------------
         user_prompt = (request.form.get("prompt") or "").strip()
 
-        # ---- 3. Convert image ➜ base64 for Gemini ---------------------------
+        # ---- 3. Convert image ➜ base64 for Gemini ----------------------------
         buf = BytesIO()
         image.save(buf, format="PNG")
         img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-        # ---- 4. Build the prompt for Gemini ---------------------------------
+        # ---- 4. Build the prompt for Gemini ----------------------------------
         base_prompt = (
             "Generate a short caption (max 20 words) describing this image for a "
             "social‑media post."
@@ -59,7 +61,7 @@ def generate_caption():
             'Return ONLY valid JSON in the form: {"caption": "", "hashtags": []}'
         )
 
-        # ---- 5. Call Gemini --------------------------------------------------
+        # ---- 5. Call Gemini ---------------------------------------------------
         response = model.generate_content(
             [
                 {"mime_type": "image/png", "data": img_b64},
@@ -69,14 +71,14 @@ def generate_caption():
 
         logging.debug("Raw Gemini response: %s", response.text)
 
-        # ---- 6. Strip any markdown fencing Gemini may return ----------------
+        # ---- 6. Strip any markdown fencing Gemini may return ------------------
         text = response.text.strip()
         if text.startswith("```json"):
             text = text[7:].rstrip("```").strip()
         elif text.startswith("```"):
             text = text[3:].rstrip("```").strip()
 
-        # ---- 7. Parse JSON (with a fallback regex extraction) ---------------
+        # ---- 7. Parse JSON ----------------------------------------------------
         try:
             result = json.loads(text)
         except json.JSONDecodeError:
@@ -87,7 +89,7 @@ def generate_caption():
                 ), 500
             result = json.loads(m.group())
 
-        # ---- 8. Validate + normalise hashtags -------------------------------
+        # ---- 8. Validate + normalise hashtags --------------------------------
         if (
             not isinstance(result, dict)
             or "caption" not in result
@@ -102,9 +104,9 @@ def generate_caption():
 
         return jsonify(result)
 
-    except Exception as e:
+    except Exception:
         logging.exception("Error processing request")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 if __name__ == "__main__":
